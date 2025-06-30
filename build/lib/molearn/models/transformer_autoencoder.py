@@ -1,21 +1,88 @@
+import math
 import torch
 import biobox as bb
 from torch import nn
 import torch.nn.functional as F
 
+class GaussianSmearing(nn.Module):
+    """
+        Ingests a pairwise distance matrix (N, L, L) and expands its channels dimension
+        to produce a vector encoding of each distance based on Gaussian basis activations
+        (N, num_gaussians, L, L). This allows the neural network to learn from continuous
+        values in a way that is smooth and differentiable.
+
+        dist: pairwise distance matrix (N, L, L)
+
+        Used in SchNet and DimeNet.
+    """
+    def __init__(self, start=0.0, stop=5.0, num_gaussians=50):
+        super().__init__()
+        offset = torch.linspace(start, stop, num_gaussians)
+        delta = offset[1] - offset[0]
+        self.coeff = -0.5 / delta.item()**2
+        self.register_buffer('offset', offset)
+        self.offset = self.offset.view(1, -1, 1, 1)
+
+    def forward(self, dist):
+        """Broadcasts dist so that for every distance you get its distance
+        from every Gaussian centre."""
+        diff = dist - self.offset
+        # print("offset:", self.offset.shape, self.coeff)
+        # print("diff:", diff.shape)
+        """Return the standard Gaussian RBF"""
+        return torch.exp(self.coeff * torch.pow(diff, 2))
+
+
 class PositionalEncoding(nn.Module):
-    def __init__(self):
+        """New module documentation: TODO."""
 
-    def forward(self, x):
-        pass
+    def __init__(self,
+                 pos_embed_dim: int,
+                 pos_embed_r: int = 32,
+                 dim_order: str = "transformer"
+                ):
+        super().__init__()
+        self.embed = nn.Embedding(pos_embed_r*2+1, pos_embed_dim)
+        self.pos_embed_r = pos_embed_r
+        self.set_dim_order(dim_order)
 
+    def set_dim_order(self, dim_order):
+        self.dim_order = dim_order
+        if self.dim_order == "transformer":
+            self.l_idx = 0  # Token (residue) index.
+            self.b_idx = 1  # Batch index.
+        elif self.dim_order == "trajectory":
+            self.l_idx = 1
+            self.b_idx = 0
+        else:
+            raise KeyError(dim_order)
+        
+    def forward(self, x, r=None):
+        """
+        x: xyz coordinate tensor of shape (L, B, *) if `dim_order` is set to
+            'transformer'.
+        r: optional, residue indices tensor of shape (B, L).
 
-class GaussianSmearing:
-    def __init__(self):
-
-    
-    def forward(self, x):
-        pass
+        returns:
+        p: 2d positional embedding of shape (B, L, L, `pos_embed_dim`).
+        """
+        if r is None:
+            prot_l = x.shape[self.l_idx]
+            p = torch.arange(0, prot_l, device=x.device)
+            p = p[None,:] - p[:,None]
+            bins = torch.linspace(-self.pos_embed_r, self.pos_embed_r,
+                                self.pos_embed_r*2+1, device=x.device)
+            b = torch.argmin(
+                torch.abs(bins.view(1, 1, -1) - p.view(p.shape[0], p.shape[1], 1)),
+                axis=-1)
+            p = self.embed(b)
+            p = p.repeat(x.shape[self.b_idx], 1, 1, 1)
+        else:
+            b = r[:,None,:] - r[:,:,None]
+            b = torch.clip(b, min=-self.pos_embed_r, max=self.pos_embed_r)
+            b = b + self.pos_embed_r
+            p = self.embed(b)
+        return p   
 
 
 class TransformerLayer(nn.Module):
@@ -186,6 +253,147 @@ class TransformerLayer(nn.Module):
         return (output, )
 
 class TransformerBlock(nn.Module):
+    """Transformer layer block from idpGAN."""
+
+    def __init__(
+        self,
+        embed_dim: int,
+        mlp_dim: int,
+        num_heads: int,
+        embed_2d_dim: int = None,
+        norm_pos: str = "pre",
+        activation: Callable = nn.ReLU,
+        d_model: int = None,
+        add_bias_kv: bool = True,
+        embed_inject_mode: str = "adanorm",
+        embed_2d_inject_mode: str = None,
+        bead_embed_dim: int = 32,
+        pos_embed_dim: int = 64,
+        use_bias_2d: int = True,
+        attention_type: str = "transformer"
+        # input_inject_mode: str = None,
+        # input_inject_pos: str = "out",
+    ):
+
+        ### Initialize and store the attributes.
+        super().__init__()
+
+        if d_model is None:
+            d_model = embed_dim
+        if not norm_pos in ("pre", "post"):
+            raise KeyError(norm_pos)
+        self.norm_pos = norm_pos
+        self.attention_type = attention_type
+
+        ### Transformer layer.
+        # Edge features (2d embeddings).
+        if embed_2d_dim is not None:
+            if embed_2d_inject_mode == "add":
+                attn_in_dim_2d = embed_2d_dim
+                if embed_2d_dim != pos_embed_dim:
+                    self.project_pos_embed_dim = nn.Linear(pos_embed_dim,
+                                                           embed_2d_dim)
+                else:
+                    self.project_pos_embed_dim = nn.Identity()
+            elif embed_2d_inject_mode == "concat":
+                attn_in_dim_2d = embed_2d_dim + pos_embed_dim
+            elif embed_2d_inject_mode is None:
+                raise ValueError(
+                    "Please provide a `embed_2d_inject_mode` when using"
+                    " `embed_2d_dim` != 'None'")
+            else:
+                raise KeyError(embed_2d_inject_mode)
+            self.embed_2d_inject_mode = embed_2d_inject_mode
+        else:
+            self.embed_2d_inject_mode = None
+            attn_in_dim_2d = pos_embed_dim
+
+        # Actual transformer layer.
+        self.attn_norm = nn.LayerNorm(
+            embed_dim,
+            elementwise_affine=embed_inject_mode != "adanorm")
+        if attention_type == "transformer":
+            self.self_attn = TransformerLayerIdpGAN(
+                in_dim=embed_dim,
+                d_model=d_model,
+                nhead=num_heads,
+                dp_attn_norm="d_model",  # dp_attn_norm="head_dim",
+                in_dim_2d=attn_in_dim_2d,
+                use_bias_2d=use_bias_2d)
+        elif attention_type  == "timewarp":
+            self.self_attn = TransformerTimewarpLayer(
+                in_dim=embed_dim,
+                d_model=d_model,
+                nhead=num_heads,
+                in_dim_2d=attn_in_dim_2d,
+                use_bias_2d=use_bias_2d)
+        else:
+            raise KeyError(attention_type)
+        
+        ### MLP.
+        if embed_inject_mode is not None:
+            if embed_inject_mode == "concat" and self.norm_pos == "post":
+                # IdpGAN mode.
+                fc1_in_dim = embed_dim + bead_embed_dim
+            else:
+                fc1_in_dim = embed_dim
+        else:
+            fc1_in_dim = embed_dim
+        self.fc1 = nn.Linear(fc1_in_dim, mlp_dim)
+        self.fc2 = nn.Linear(mlp_dim, embed_dim)
+        self.final_norm = nn.LayerNorm(
+            embed_dim,
+            elementwise_affine=embed_inject_mode != "adanorm")
+        self.act = activation()
+
+        ### Conditional information injection module.
+        self.cond_injection_module = AE_ConditionalInjectionModule(
+            mode=embed_inject_mode,
+            embed_dim=embed_dim,
+            bead_embed_dim=bead_embed_dim,
+            activation=activation,
+            norm_pos=norm_pos
+        )
+
+    def forward(self, x, a, p, z=None, x_0=None):
+
+        # Attention mechanism.
+        residual = x
+        inj_out = self.cond_injection_module(a=a)
+        x = self.cond_injection_module.inject_0(x, inj_out)
+        if self.norm_pos == "pre":
+            x = self.attn_norm(x)
+        x = self.cond_injection_module.inject_1_pre(x, inj_out)
+        if self.embed_2d_inject_mode == "add":
+            z_hat = z + self.project_pos_embed_dim(p)
+        elif self.embed_2d_inject_mode == "concat":
+            z_hat = torch.cat([z, p], axis=3)
+        elif self.embed_2d_inject_mode is None:
+            z_hat = p
+        else:
+            raise KeyError(self.embed_2d_inject_mode)
+        x = self.self_attn(x, x, x, p=z_hat)[0]
+        attn = None
+        x = self.cond_injection_module.inject_1_post(x, inj_out)
+        x = residual + x
+        if self.norm_pos == "post":
+            x = self.attn_norm(x)
+
+        # MLP update.
+        residual = x
+        if self.norm_pos == "pre":
+            x = self.final_norm(x)
+        x = self.cond_injection_module.inject_2_pre(x, inj_out)
+        x = self.fc2(self.act(self.fc1(x)))
+        x = self.cond_injection_module.inject_2_post(x, inj_out)
+        x = residual + x
+        if self.norm_pos == "post":
+            x = self.final_norm(x)
+
+        # # Inject initial input.
+        # x = self.inject_input(x, x_0, pos="out")
+
+        return x, attn
 
 
 class TransformerEncoder(nn.Module):
