@@ -1,11 +1,13 @@
 name: docs-environment
 channels:
+  - pytorch
+  - nvidia
   - conda-forge
   - salilab
   - plotly
   - defaults
 dependencies:
-  - python=3.11
+  - python=3.8
   - pip
   - numpy
   - mdanalysis
@@ -13,7 +15,8 @@ dependencies:
   - cctbx
   - pandas
   - scipy
-  - pytorch-cpu
+  - pytorch
+  - pytorch-cuda=12.1
   - biobox
   - openmm
   - ipywidgets
