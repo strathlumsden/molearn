@@ -12,8 +12,8 @@ def main():
     ##### Load Data #####
     data = PDBData()
     data.import_pdb(
-        "./clustered/MurD_open_selection_CLUSTER_aggl_train.dcd",
-        "./clustered/MurD_open_selection_NEW_TOPO.pdb",
+        "./data/MurD_open_selection.pdb",
+        "./data/MurD_closed_selection.pdb",
     )
     data.fix_terminal()
     data.atomselect(atoms=["CA", "C", "N", "CB", "O"])
