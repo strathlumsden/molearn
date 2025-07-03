@@ -271,7 +271,7 @@ class Trainer:
             else:
                 break
 
-    def train_epoch(self, epoch):
+    def train_epoch(self, epoch=None):
         """
         Train one epoch. Called once an epoch from :func:`trainer.run <molearn.trainers.Trainer.run>`
         This method performs the following functions:
@@ -349,7 +349,7 @@ class Trainer:
         self._internal["decoded"] = decoded
         return dict(mse_loss=((batch - decoded) ** 2).mean())
 
-    def valid_epoch(self, epoch):
+    def valid_epoch(self, epoch=None):
         """
         Called once an epoch from :func:`trainer.run <molearn.trainers.Trainer.run>` within a no_grad context.
         This method performs the following functions:
