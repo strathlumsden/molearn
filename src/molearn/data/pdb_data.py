@@ -41,7 +41,7 @@ radii = {
 
 
 class PDBData:
-    def __init__(self, filename=None, topology=None, fix_terminal=False, atoms=None):
+    def __init__(self, filename=None, topology=None, fix_terminal=False, atoms=None, for_transformer=False):
         """
         Create object enabling the manipulation of multi-PDB files into a dataset suitable for training.
 
@@ -49,10 +49,12 @@ class PDBData:
         :param None | str topology: If not None, :func:`import_pdb <molearn.data.PDBData.import_pdb>` is called with the topology file.
         :param bool fix_terminal: If True, calls :func:`fix_terminal <molearn.data.PDBData.fix_terminal>` after import, and before atomselect
         :param list[str] atoms: If not None, calls :func:`atomselect <molearn.data.PDBData.atomselect>`
+        :param bool transformer: If True, formats the data for a transformer model (reshaped, no normalization).
         """
 
         self.filename = filename
         self.topology = topology
+        self.for_transformer = for_transformer
         if filename is not None:
             self.import_pdb(filename, topology)
             if fix_terminal:
@@ -121,16 +123,32 @@ class PDBData:
         self.dataset = np.asarray(
             [self._mol.atoms.positions.astype(float) for _ in self._mol.trajectory]
         )
-        if not hasattr(self, "std"):
-            self.std = self.dataset.std()
-        if not hasattr(self, "mean"):
-            self.mean = self.dataset.mean()
-        self.dataset -= self.mean
-        self.dataset /= self.std
-        self.dataset = torch.from_numpy(self.dataset).float()
-        self.dataset = self.dataset.permute(0, 2, 1)
-        print(f"Dataset shape: {self.dataset.shape}")
-        print(f"mean: {str(self.mean)}\n std: {str(self.std)}")
+        
+        if self.for_transformer:
+            num_frames = self.dataset.shape[0]
+            num_residues = len(self._mol.residues)
+            if self.dataset.shape[1] != num_residues * 4:
+                raise ValueError(
+                    "Transformer mode requires exactly 4 atoms per residue (N, CA, C, O)."
+                )
+            self.dataset = self.dataset.reshape(num_frames, num_residues, 4, 3)
+            # Final shape is (B, L, 4, 3)
+
+            # Final Step: Convert to PyTorch Tensor
+            self.dataset = torch.from_numpy(self.dataset).float()
+            print(f"Dataset shape: {self.dataset.shape}")
+
+        else:
+            if not hasattr(self, "std"):
+                self.std = self.dataset.std()
+            if not hasattr(self, "mean"):
+                self.mean = self.dataset.mean()
+            self.dataset -= self.mean
+            self.dataset /= self.std
+            self.dataset = torch.from_numpy(self.dataset).float()
+            self.dataset = self.dataset.permute(0, 2, 1)
+            print(f"Dataset shape: {self.dataset.shape}")
+            print(f"mean: {str(self.mean)}\n std: {str(self.std)}")
 
     def get_atominfo(self):
         """
