@@ -4,35 +4,6 @@ import biobox as bb
 from torch import nn
 import torch.nn.functional as F
 
-class GaussianSmearing(nn.Module):
-    """
-        Ingests a pairwise distance matrix (N, L, L) and expands its channels dimension
-        to produce a vector encoding of each distance based on Gaussian basis activations
-        (N, num_gaussians, L, L). This allows the neural network to learn from continuous
-        values in a way that is smooth and differentiable.
-
-        dist: pairwise distance matrix (N, L, L)
-
-        Used in SchNet and DimeNet.
-    """
-    def __init__(self, start=0.0, stop=5.0, num_gaussians=50):
-        super().__init__()
-        offset = torch.linspace(start, stop, num_gaussians)
-        delta = offset[1] - offset[0]
-        self.coeff = -0.5 / delta.item()**2
-        self.register_buffer('offset', offset)
-        self.offset = self.offset.view(1, -1, 1, 1)
-
-    def forward(self, dist):
-        """Broadcasts dist so that for every distance you get its distance
-        from every Gaussian centre."""
-        diff = dist - self.offset
-        # print("offset:", self.offset.shape, self.coeff)
-        # print("diff:", diff.shape)
-        """Return the standard Gaussian RBF"""
-        return torch.exp(self.coeff * torch.pow(diff, 2))
-
-
 class PositionalEncoding(nn.Module):
         """New module documentation: TODO."""
 
