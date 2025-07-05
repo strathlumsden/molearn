@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from typing import Tuple
+from typing import Tuple, Optional
 
 def calculate_dihedrals(p0: torch.Tensor, p1: torch.Tensor, p2: torch.Tensor, p3: torch.Tensor) -> torch.Tensor:
     """
@@ -100,3 +100,28 @@ def get_distance_features(coords1: torch.Tensor, coords2: torch.Tensor, embeddin
     dmap_embedded = embedding_module(dmap)
     
     return dmap_embedded
+
+def get_residx_matrix(batch_size: int, 
+                      sequence_length: int, 
+                      device: Optional[torch.device] = None) -> torch.Tensor:
+    """
+    Generates a batch of residue index tensors for positional encoding.
+
+    Args:
+        batch_size (int): The number of items in the batch (B).
+        sequence_length (int): The length of the protein sequence (L).
+        device (torch.device, optional): The device to create the tensor on (e.g., 'cuda').
+
+    Returns:
+        A tensor of shape (B, L) where each row is [0, 1, 2, ..., L-1].
+    """
+    # Create a single row of indices: [0, 1, 2, ..., L-1]
+    residx_1d = torch.arange(sequence_length, device=device)
+    
+    # Add a new dimension at the front: shape becomes (1, L)
+    residx_1d = residx_1d.unsqueeze(0)
+    
+    # Expand the single row to match the batch size without copying memory
+    residx_matrix = residx_1d.expand(batch_size, -1)
+    
+    return residx_matrix
