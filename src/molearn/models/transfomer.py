@@ -5,7 +5,7 @@ class MultiHeadAttention(nn.Module):
     """
     A multi-head attention layer that accepts a 2D pair bias.
     """
-    def __init__(self, node_dim: int, pair_dim: int, num_heads: int):
+    def __init__(self, node_dim: int, pair_dim: int, num_heads: int, dropout_p: float = 0.1):
         super().__init__()
         assert node_dim % num_heads == 0, "node_dim must be divisible by num_heads"
         self.num_heads = num_heads
@@ -19,6 +19,8 @@ class MultiHeadAttention(nn.Module):
         
         # The final output projection layer
         self.out_linear = nn.Linear(node_dim, node_dim)
+
+        self.attn_dropout = nn.Dropout(p=dropout_p)
 
     def forward(self, s: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         # Input s (nodes) shape: (B, L, node_dim)
@@ -43,6 +45,9 @@ class MultiHeadAttention(nn.Module):
         scores = scores + bias
         attn_weights = torch.softmax(scores, dim=-1)
 
+        # Apply dropout attention weights
+        attn_weights = self.attn_dropout(attn_weights)
+
         # 4. Apply attention to V vectors
         s_update = torch.matmul(attn_weights, v)
         
@@ -52,7 +57,7 @@ class MultiHeadAttention(nn.Module):
 
 class FeedForward(nn.Module):
     """ A simple two-layer MLP with a GELU activation, used in transformer blocks. """
-    def __init__(self, dim: int, multiplier: int = 4):
+    def __init__(self, dim: int, multiplier: int = 4, dropout_p: float = 0.1):
         """
         Args:
             dim (int): The input and output dimension of the network.
@@ -63,6 +68,7 @@ class FeedForward(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(dim, hidden_dim),
             nn.GELU(),
+            nn.Dropout(p=dropout_p)
             nn.Linear(hidden_dim, dim)
         )
     
