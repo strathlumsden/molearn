@@ -76,9 +76,9 @@ class FeedForward(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(dim, hidden_dim),
             nn.GELU(),
-            nn.Dropout(p=dropout_p)
+            nn.Dropout(p=dropout_p),
             nn.Linear(hidden_dim, dim)
-        )
+            )
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Input x shape: (B, L, dim)
