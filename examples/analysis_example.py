@@ -1,8 +1,8 @@
 import torch
 import os
-# import sys
+import sys
 
-# sys.path.insert(0, os.path.join(os.path.abspath(os.pardir), "src"))
+sys.path.insert(0, os.path.join(os.path.abspath(os.pardir), "src"))
 from molearn.models.foldingnet import AutoEncoder
 from molearn.analysis import MolearnAnalysis
 from molearn.data import PDBData
@@ -15,7 +15,7 @@ def main():
 
     print("> Loading network parameters...")
 
-    fname = f"xbb_foldingnet_checkpoints{os.sep}checkpoint_epoch208_loss-4.205589803059896.ckpt"
+    fname = f"xbb_foldingnet_checkpoints{os.sep}checkpoint_epoch212_loss-4.861691368950738.ckpt"
     # if GPU is available we will use the GPU else the CPU
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(fname, map_location=device)
@@ -44,11 +44,11 @@ def main():
     # the neural network was trained, the same train-test split will be obtained
     data = PDBData()
     data.import_pdb(
-        "./clustered/MurD_open_selection_CLUSTER_aggl_train.dcd",
-        "./clustered/MurD_open_selection_NEW_TOPO.pdb",
+        "./data/MurD_open_selection.pdb",
+        "./data/MurD_closed_selection.pdb",
     )
     data.fix_terminal()
-    data.atomselect(atoms=["CA", "C", "N", "CB", "O"])
+    data.atomselect(atoms=["CA", "C", "N"])
     data.prepare_dataset()
     data_train, data_test = data.split(manual_seed=25)
 
