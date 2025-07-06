@@ -1,5 +1,12 @@
+import sys
+import os
 import torch
 import torch.nn as nn
+
+sys.path.insert(0, os.path.join(os.path.dirname(sys.path[0]), "src"))
+from molearn.data.features import calculate_dihedrals, get_backbone_torsion_features, get_distance_features
+from molearn.models.embedding import GaussianSmearing, AF2_PositionalEmbedding
+
 
 class MultiHeadAttention(nn.Module):
     """
@@ -20,6 +27,7 @@ class MultiHeadAttention(nn.Module):
         # The final output projection layer
         self.out_linear = nn.Linear(node_dim, node_dim)
 
+        # A dropout layer to regularize the attention weights
         self.attn_dropout = nn.Dropout(p=dropout_p)
 
     def forward(self, s: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
@@ -45,7 +53,7 @@ class MultiHeadAttention(nn.Module):
         scores = scores + bias
         attn_weights = torch.softmax(scores, dim=-1)
 
-        # Apply dropout attention weights
+        # Apply dropout to attention weights
         attn_weights = self.attn_dropout(attn_weights)
 
         # 4. Apply attention to V vectors
@@ -104,7 +112,8 @@ class InvariantEncoder(nn.Module):
     This module orchestrates the entire process from backbone coordinates to a
     low-dimensional latent space representation.
     """
-    def __init__(self, node_embed_dim: int = 64, pair_embed_dim: int = 32, num_blocks: int = 4, num_heads: int = 4, latent_dim: int = 2, use_skips: bool=False):
+    def __init__(self, node_embed_dim: int = 64, pair_embed_dim: int = 32, num_blocks: int = 4, num_heads: int = 4, 
+                 latent_dim: int = 2, num_gaussians_ca: int=128, num_gaussians_no: int=64, use_skips: bool=False):
         super().__init__()
 
         self.use_skips = use_skips
@@ -113,11 +122,11 @@ class InvariantEncoder(nn.Module):
         self.project_1d_features = nn.Linear(6, node_embed_dim) # 6 for sin/cos of 3 angles
         
         # RBF modules for distances
-        self.rbf_ca = GaussianSmearing(start=0.0, stop=20.0, num_gaussians=128)
-        self.rbf_no = GaussianSmearing(start=0.0, stop=5.0, num_gaussians=64)
+        self.rbf_ca = GaussianSmearing(start=0.0, stop=20.0, num_gaussians=num_gaussians_ca)
+        self.rbf_no = GaussianSmearing(start=0.0, stop=5.0, num_gaussians=num_gaussians_no)
         
         # Projection for combined distance features
-        self.project_2d_features = nn.Linear(128 + 64, pair_embed_dim)
+        self.project_2d_features = nn.Linear(num_gaussians_ca + num_gaussians_no, pair_embed_dim)
         
         # Positional encoding
         self.positional_encoding = AF2_PositionalEmbedding(pair_embed_dim)
