@@ -49,3 +49,49 @@ class GaussianSmearing(nn.Module):
         exponent = -1 * (distances - self.centers)**2 / (2 * self.sigma**2)
         
         return torch.exp(exponent)
+    
+
+class AF2_PositionalEmbedding(nn.Module):
+    """
+    Implements the relative positional embedding from the AlphaFold2 paper.
+    """
+    def __init__(self, pair_embed_dim: int, pos_embed_r: int = 32):
+        """
+        Args:
+            pair_embed_dim (int): The dimension of the final pair/edge representation.
+            pos_embed_r (int): The maximum relative position to consider.
+        """
+        super().__init__()
+        self.pos_embed_r = pos_embed_r
+        # Create a learnable embedding for relative positions from -r to +r.
+        # Total size is 2*r + 1 for positions, plus one for "too far".
+        self.embedding = nn.Embedding(2 * pos_embed_r + 2, pair_embed_dim)
+
+    def forward(self, residx: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            residx (torch.Tensor): A tensor of residue indices of shape (B, L).
+
+        Returns:
+            A tensor of positional embeddings of shape (B, L, L, pair_embed_dim).
+        """
+        B, L = residx.shape
+        # Create a matrix of relative distances: d[i, j] = i - j
+        d = residx[:, :, None] - residx[:, None, :]
+        
+        # Clip the distances to be within the range [-r, r]
+        d_clipped = torch.clamp(d, -self.pos_embed_r, self.pos_embed_r)
+        
+        # Shift the indices to be non-negative for the embedding lookup
+        # The "+ r + 1" index is used for all distances > r or < -r
+        d_final = d_clipped + self.pos_embed_r
+        
+        # Use a mask for distances outside the range
+        too_far = torch.abs(d) > self.pos_embed_r
+        d_final[too_far] = 2 * self.pos_embed_r + 1
+        
+        # Look up the embeddings
+        pos_embed = self.embedding(d_final)
+        return pos_embed
+    
+
