@@ -1,5 +1,7 @@
 import torch
+import torch.nn.functional as F
 from molearn.loss_functions import openmm_energy
+from molearn.loss_functions.geometric import compute_distance_loss, compute_torsion_loss
 from .trainer import Trainer
 import os
 
@@ -74,9 +76,13 @@ class OpenMM_Physics_Trainer(Trainer):
             clamp_kwargs = dict(max=clamp_threshold, min=-clamp_threshold)
         else:
             clamp_kwargs = None
+        
+        # Account for the un-normalized transformer data
+        std_to_use = 1.0 if self.for_transformer==True else self.std
+
         self.physics_loss = openmm_energy(
             self.mol,
-            self.std,
+            std_to_use,
             clamp=clamp_kwargs,
             platform="CUDA" if self.device == torch.device("cuda") else "Reference",
             atoms=self._data.atoms,
@@ -106,6 +112,29 @@ class OpenMM_Physics_Trainer(Trainer):
         return {
             "physics_loss": energy
         }  # a if not energy.isinf() else torch.tensor(0.0)}
+    
+    def _compute_transformer_physics_loss(self, predicted_coords: torch.Tensor) -> torch.Tensor:
+        """
+        Contains the logic for calculating physics loss for a transformer-based architecture.
+        Handles reshaping and clamping.
+        """
+        B, L, N_atoms_per_res, _ = predicted_coords.shape
+        
+        # Reshape from (B, L, 4, 3) to (B, L*4, 3)
+        coords_reshaped = predicted_coords.reshape(B, L * N_atoms_per_res, 3)
+        
+        # Permute from (B, N, 3) to (B, 3, N) as expected by the openmm_energy module
+        coords_permuted = coords_reshaped.permute(0, 2, 1)
+        
+        # Calculate the energy
+        energy = self.physics_loss(coords_permuted)
+        
+        # Apply clamping and safe averaging for stability
+        energy[energy.isinf()] = 1e35
+        energy = torch.clamp(energy, max=1e34)
+        
+        return energy.nanmean()
+
 
     def train_step(self, batch):
         """
@@ -117,23 +146,65 @@ class OpenMM_Physics_Trainer(Trainer):
         :rtype: dict
         """
 
-        results = self.common_step(batch)
-        results.update(self.common_physics_step(batch, self._internal["encoded"]))
+        if self.for_transformer:
 
-        with torch.no_grad():
-            if self.epoch == self.start_physics_at:
-                self.phy_scale = self._get_scale(
-                    results["mse_loss"],
-                    results["physics_loss"],
-                    self.psf,
+            true_coords = batch
+            predicted_coords = self.autoencoder(true_coords)
+            
+            # Calculate individual loss components
+            mse_loss = F.mse_loss(predicted_coords, true_coords)
+            dist_loss = compute_distance_loss(predicted_coords, true_coords)
+            torsion_loss = compute_torsion_loss(predicted_coords, true_coords)
+            
+            results = {
+                "mse_loss": mse_loss,
+                "dist_loss": dist_loss,
+                "torsion_loss": torsion_loss,
+            }
+
+            # Add physics loss only after the specified startup epoch
+            if self.epoch >= self.start_physics_at:
+                physics_loss = self._compute_transformer_physics_loss(predicted_coords)
+                results["physics_loss"] = physics_loss
+            else:
+                results["physics_loss"] = torch.tensor(0.0, device=self.device)
+
+            with torch.no_grad():
+                # Use loss_weights as base scaling factors
+                s = self.loss_weights
+                scale_dist = s['w_dist'] * results['mse_loss'] / (results['dist_loss'] + 1e-8)
+                scale_torsion = s['w_torsion'] * results['mse_loss'] / (results['torsion_loss'] + 1e-8)
+                scale_phys = s['w_phys'] * results['mse_loss'] / (results['physics_loss'] + 1e-8)
+                
+                total_loss = (
+                    results['mse_loss'] + 
+                    scale_dist * results['dist_loss'] + 
+                    scale_torsion * results['torsion_loss'] +
+                    scale_phys * results['physics_loss']
                 )
-        if self.epoch >= self.start_physics_at:
-            final_loss = results["mse_loss"] + self.phy_scale * results["physics_loss"]
-        else:
-            final_loss = results["mse_loss"]
+                
+            results["loss"] = total_loss
+            return results
 
-        results["loss"] = final_loss
-        return results
+        else:
+
+            results = self.common_step(batch)
+            results.update(self.common_physics_step(batch, self._internal["encoded"]))
+            
+            with torch.no_grad():
+                if self.epoch == self.start_physics_at:
+                    self.phy_scale = self._get_scale(
+                        results["mse_loss"],
+                        results["physics_loss"],
+                        self.psf,
+                    )
+            if self.epoch >= self.start_physics_at:
+                final_loss = results["mse_loss"] + self.phy_scale * results["physics_loss"]
+            else:
+                final_loss = results["mse_loss"]
+
+            results["loss"] = final_loss
+            return results
 
     def valid_step(self, batch):
         """
@@ -148,6 +219,40 @@ class OpenMM_Physics_Trainer(Trainer):
         :rtype: dict
 
         """
+        if self.for_transformer:
+            true_coords = batch
+            predicted_coords = self.autoencoder(true_coords)
+            
+            rec_loss = F.mse_loss(predicted_coords, true_coords)
+            dist_loss = compute_distance_loss(predicted_coords, true_coords)
+            torsion_loss = compute_torsion_loss(predicted_coords, true_coords)
+            
+            results = {
+                "rec_loss": rec_loss,
+                "dist_loss": dist_loss,
+                "torsion_loss": torsion_loss,
+            }
+
+            if self.epoch >= self.start_physics_at:
+                phys_loss = self._compute_transformer_physics_loss(predicted_coords)
+                results["phys_loss"] = phys_loss
+            else:
+                results["phys_loss"] = torch.tensor(0.0, device=self.device)
+            
+            # Use log-sum for a stable validation metric.
+            # Add a small epsilon to prevent log(0).
+            w = self.loss_weights
+            log_loss = (
+                (w['w_rec'] * torch.log(results['rec_loss'] + 1e-8)) +
+                (w['w_dist'] * torch.log(results['dist_loss'] + 1e-8)) +
+                (w['w_torsion'] * torch.log(results['torsion_loss'] + 1e-8))
+            )
+            # Only add physics loss to the log sum if it's active
+            if self.epoch >= self.start_physics_at:
+                log_loss += (w['w_phys'] * torch.log(results['phys_loss'] + 1e-8))
+
+            results["loss"] = log_loss
+            return results
 
         results = self.common_step(batch)
         results.update(self.common_physics_step(batch, self._internal["encoded"]))

@@ -55,6 +55,7 @@ class Trainer:
         self.log_filename = None
         self.scheduler_key = None
         self.json_log = json_log
+        self.for_transformer = False
 
     def get_network_summary(self):
         """
@@ -109,16 +110,20 @@ class Trainer:
         """
         if isinstance(data, PDBData):
             self.set_dataloader(*data.get_dataloader(**kwargs))
+            self.for_transformer = data.for_transformer
         else:
             raise NotImplementedError(
                 "Have not implemented this method to use any data other than PDBData yet"
             )
-        self.std = data.std
-        self.mean = data.mean
+        if hasattr(data, 'std'):
+            self.std = data.std
+        if hasattr(data, 'mean'):
+            self.mean = data.mean
+
         self.mol = data.mol
         self._data = data
 
-    def prepare_optimiser(self, lr=1e-3, weight_decay=0.0001, **optimiser_kwargs):
+    def prepare_optimiser(self, lr=1e-3, weight_decay=0.0001, loss_weights=None, **optimiser_kwargs):
         """
         The Default optimiser is ``AdamW`` and is saved in ``self.optimiser``.
         With no optional arguments this function is the same as doing:
@@ -134,6 +139,8 @@ class Trainer:
             weight_decay=weight_decay,
             **optimiser_kwargs,
         )
+
+        self.loss_weights = loss_weights
 
     def log(self, log_dict, verbose=None):
         """
