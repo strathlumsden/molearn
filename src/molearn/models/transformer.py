@@ -113,7 +113,7 @@ class InvariantEncoder(nn.Module):
     low-dimensional latent space representation.
     """
     def __init__(self, node_embed_dim: int = 64, pair_embed_dim: int = 32, num_blocks: int = 4, num_heads: int = 4, 
-                 latent_dim: int = 2, num_gaussians_ca: int=128, num_gaussians_no: int=64, use_skips: bool=False):
+                 latent_dim: int = 2, num_gaussians_ca: int=128, num_gaussians_no: int=64, use_skips: bool=False, **kwargs):
         super().__init__()
 
         self.use_skips = use_skips
@@ -189,19 +189,20 @@ class UNetDecoder(nn.Module):
                  node_dim: int, 
                  pair_dim: int, 
                  num_blocks: int, 
-                 num_heads: int):
+                 num_heads: int,
+                 **kwargs):
         super().__init__()
         self.L = L
         self.node_dim = node_dim
 
-        # 1. The initial "un-pooling" layer
+        # The initial "un-pooling" layer
         self.unpool_mlp = nn.Sequential(
             nn.Linear(latent_dim, L * node_dim),
             nn.GELU()
         )
 
-        # 2. Decoder blocks. Note that the input dimension to the internal layers
-        #    will be 2 * node_dim because of the skip connection concatenation.
+        # Decoder blocks. Note that the input dimension to the internal layers
+        #   will be 2 * node_dim because of the skip connection concatenation.
         self.decoder_blocks = nn.ModuleList([
             TransformerBlock(
                 node_dim=node_dim * 2, # Input is concatenated s_dec and s_skip
@@ -216,7 +217,7 @@ class UNetDecoder(nn.Module):
             nn.Linear(node_dim * 2, node_dim) for _ in range(num_blocks)
         ])
 
-        # 3. Final projection layer to predict coordinates
+        # Final projection layer to predict coordinates
         self.coord_projection = nn.Linear(node_dim * 2, 4 * 3) # 4 atoms, 3 coords each
 
     def forward(self, latent_vec: torch.Tensor, 
@@ -253,11 +254,11 @@ class UNetDecoder(nn.Module):
         return pred_coords
 
 
-class InvariantAutoencoder(nn.Module):
+class Autoencoder(nn.Module):
     """
     TODO.
     """
-    def __init__(self, L: int, node_dim: int, pair_dim: int, latent_dim: int, num_blocks: int, num_heads: int):
+    def __init__(self, L: int, node_dim: int, pair_dim: int, latent_dim: int, num_blocks: int, num_heads: int, **kwargs):
         super().__init__()
         
         # Instantiate the full encoder
@@ -281,12 +282,12 @@ class InvariantAutoencoder(nn.Module):
         )
 
     def forward(self, batch_coords: torch.Tensor):
-        # --- 1. ENCODE ---
+        # --- ENCODE ---
         # The encoder must be modified to return the latent vector, the final pair bias 'z',
         # and the list of skip connections.
         latent_vec, z_pair_bias, skips = self.encoder(batch_coords)
         
-        # --- 2. DECODE ---
+        # --- DECODE ---
         # Pass the encoder's outputs directly to the decoder
         reconstructed_coords = self.decoder(latent_vec, skips, z_pair_bias)
         
