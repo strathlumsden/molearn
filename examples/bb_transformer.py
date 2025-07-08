@@ -22,7 +22,7 @@ def main():
         "latent_dim": 8,
         "num_blocks": 2,
         "num_heads": 4,
-        "use_skips": True # We are using the U-Net style decoder
+        "dropout_p": 0.1
     }
 
     # Training hyperparameters
@@ -35,7 +35,6 @@ def main():
 
     # Regularization hyperparameters
     regularization_params = {
-        "dropout_p": 0.1,
         "weight_decay": 1e-2
     }
 
@@ -47,6 +46,11 @@ def main():
         "w_phys": 0.01
     }
 
+    physics_params = {
+        "start_physics_at": 10,
+        "soft_NB": True
+    }
+
     # ==================================================================
     # 2. Data Pipeline Setup
     # ==================================================================
@@ -55,9 +59,10 @@ def main():
     # Instantiate PDBData with the transformer flag set to True
     data = PDBData(for_transformer=True)
 
-    data.import_pdb(filename=["./data/MurD_closed_selection.pdb", "./data/MurD_open_selection.pdb"])
+    data.import_pdb(filename=["./data/MurD_closed_selection.pdb", "./data/MurD_open_selection.pdb"],
+                    topology=None)
     data.fix_terminal()
-    data.atomselect(atoms=["CA", "C", "N", "O"])
+    data.atomselect(atoms=["N", "CA", "C", "O"])
 
     # ==================================================================
     # 3. Trainer and Model Preparation
@@ -78,7 +83,7 @@ def main():
     
     # Prepare the physics engine. This method is assumed to be updated
     # to handle the dummy std and initialize the OpenMM engine correctly.
-    trainer.prepare_physics(soft_NB=True, start_physics_at=10)
+    trainer.prepare_physics(**physics_params)
 
     # Set the new Autoencoder model with its specific hyperparameters
     trainer.set_autoencoder(Autoencoder, **model_params)
@@ -117,43 +122,6 @@ def main():
     print(f"\nTraining complete for {exp_id}.")
     print(f"Best validation loss: {trainer.best}")
     print(f"Best model saved to: {trainer.best_name}")
-
-
-if __name__ == "__main__":
-    main()
-
-
-
-
-
-
-    ##### Prepare Trainer #####
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    trainer = OpenMM_Physics_Trainer(device=device)
-
-    trainer.set_data(data, batch_size=8, validation_split=0.1, manual_seed=25)
-    trainer.prepare_physics(remove_NB=True)
-
-    # UPDATE THIS LINE
-    trainer.set_autoencoder(Autoencoder, out_points=data.dataset.shape[-1])
-    trainer.prepare_optimiser()
-
-    ##### Training Loop #####
-    # Keep training until loss does not improve for 32 consecutive epochs
-
-    runkwargs = dict(
-        log_filename="log_file.dat",
-        log_folder="xbb_foldingnet_checkpoints",
-        checkpoint_folder="xbb_foldingnet_checkpoints",
-    )
-
-    best = 1e24
-    while True:
-        trainer.run(max_epochs=32 + trainer.epoch, **runkwargs)
-        if not best > trainer.best:
-            break
-        best = trainer.best
-    print(f"best {trainer.best}, best_filename {trainer.best_name}")
 
 
 if __name__ == "__main__":
