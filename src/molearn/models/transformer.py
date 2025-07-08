@@ -91,22 +91,23 @@ class FeedForward(nn.Module):
     
 
 class TransformerBlock(nn.Module):
-    """ A standard transformer block with pre-normalization. """
+    """ A standard transformer block with pre-normalization and residual dropout."""
     def __init__(self, node_dim: int, pair_dim: int, num_heads: int, ff_mult: int = 4, dropout_p: float = 0.1):
         super().__init__()
         self.norm1 = nn.LayerNorm(node_dim)
         self.attn = MultiHeadAttention(node_dim, pair_dim, num_heads, dropout_p=dropout_p)
         self.norm2 = nn.LayerNorm(node_dim)
         self.ff = FeedForward(node_dim, multiplier=ff_mult, dropout_p=dropout_p)
+        self.dropout = nn.Dropout(p=dropout_p)
 
     def forward(self, s: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         # s shape: (B, L, node_dim), z shape: (B, L, L, pair_dim)
         
         # First sub-layer: Attention
-        s = s + self.attn(self.norm1(s), z)
+        s = s + self.dropout(self.attn(self.norm1(s), z))
         
         # Second sub-layer: Feed-forward
-        s = s + self.ff(self.norm2(s))
+        s = s + self.dropout(self.ff(self.norm2(s)))
         
         return s
     
@@ -210,7 +211,7 @@ class TransformerDecoder(nn.Module):
         ])
 
         # Final projection layer to predict coordinates
-        self.coord_projection = nn.Linear(node_dim * 2, 4 * 3) # 4 atoms, 3 coords each
+        self.coord_projection = nn.Linear(node_dim, 4 * 3) # 4 atoms, 3 coords each
 
     def forward(self, latent_vec: torch.Tensor,  
                 z_pair_bias: torch.Tensor) -> torch.Tensor:
@@ -224,6 +225,7 @@ class TransformerDecoder(nn.Module):
         for block in self.decoder_blocks:
             s = block(s, z_pair_bias)
         
+        # The input to the final projection is 's', which has shape (B, L, node_dim).
         pred_coords = self.coord_projection(s).view(B, self.L, 4, 3)
         return pred_coords
         
@@ -272,7 +274,61 @@ class Autoencoder(nn.Module):
         # --- DECODE ---
         reconstructed_coords = self.decoder(latent_vec, z_pair_bias)
         
-        return reconstructed_coords    
+        return reconstructed_coords
+    
+
+    def encode(self, coords: torch.Tensor) -> torch.Tensor:
+        """
+        Encodes a batch of coordinates into their latent representations.
+        
+        Args:
+            coords (torch.Tensor): A tensor of shape (B, L, 4, 3).
+
+        Returns:
+            A tensor of latent vectors of shape (B, latent_dim).
+        """
+        self.eval()
+        with torch.no_grad():
+            B, L, _, _ = coords.shape
+            device = coords.device
+            residx = torch.arange(L, device=device).unsqueeze(0).expand(B, -1)
+            
+            latent_vec, _ = self.encoder(coords, residx)
+        return latent_vec
+
+    def decode(self, latent_vec: torch.Tensor, reference_coords: torch.Tensor) -> torch.Tensor:
+        """
+        Decodes a latent vector into a 3D structure, using a reference structure
+        to provide the necessary geometric context (2D pair bias).
+
+        Args:
+            latent_vec (torch.Tensor): The latent vectors to decode, shape (B, latent_dim).
+            reference_coords (torch.Tensor): A batch of reference coordinates used to
+                                             calculate the z_pair_bias, shape (B, L, 4, 3).
+                                             This could be, for example, the "open" state structure.
+
+        Returns:
+            A tensor of reconstructed coordinates of shape (B, L, 4, 3).
+        """
+        self.eval()
+        with torch.no_grad():
+            B, L, _, _ = reference_coords.shape
+            device = reference_coords.device
+            residx = torch.arange(L, device=device).unsqueeze(0).expand(B, -1)
+
+            # Re-calculate the z_pair_bias from the reference coordinates
+            s_in = get_backbone_torsion_features(reference_coords)
+            z_ca = get_distance_features(reference_coords[:, :, 1], reference_coords[:, :, 1], self.encoder.rbf_ca)
+            z_no = get_distance_features(reference_coords[:, :, 0], reference_coords[:, :, 3], self.encoder.rbf_no)
+            z_dist = torch.cat([z_ca, z_no], dim=-1)
+            z_geometric = self.encoder.project_2d_features(z_dist)
+            z_positional = self.encoder.positional_encoding(residx)
+            z_pair_bias = z_geometric + z_positional
+            
+            # Decode using the new latent vector but the reference geometry
+            reconstructed_coords = self.decoder(latent_vec, z_pair_bias)
+        return reconstructed_coords
+
 
 
     
