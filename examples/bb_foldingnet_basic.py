@@ -16,7 +16,7 @@ def main():
         "./data/MurD_closed_selection.pdb",
     )
     data.fix_terminal()
-    data.atomselect(atoms=["CA", "C", "N"])
+    data.atomselect(atoms=["CA", "C", "N", "O"])
 
     ##### Prepare Trainer #####
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
