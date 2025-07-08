@@ -7,6 +7,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(sys.path[0]), "src"))
 from molearn.data.features import calculate_dihedrals, get_backbone_torsion_features, get_distance_features
 from molearn.models.embedding import GaussianSmearing, AF2_PositionalEmbedding
 
+# ==============================================================================
+# Core Building Blocks
+# ==============================================================================
+
 
 class MultiHeadAttention(nn.Module):
     """
@@ -88,12 +92,12 @@ class FeedForward(nn.Module):
 
 class TransformerBlock(nn.Module):
     """ A standard transformer block with pre-normalization. """
-    def __init__(self, node_dim: int, pair_dim: int, num_heads: int, ff_mult: int = 4):
+    def __init__(self, node_dim: int, pair_dim: int, num_heads: int, ff_mult: int = 4, dropout_p: float = 0.1):
         super().__init__()
         self.norm1 = nn.LayerNorm(node_dim)
-        self.attn = MultiHeadAttention(node_dim, pair_dim, num_heads)
+        self.attn = MultiHeadAttention(node_dim, pair_dim, num_heads, dropout_p=dropout_p)
         self.norm2 = nn.LayerNorm(node_dim)
-        self.ff = FeedForward(node_dim, multiplier=ff_mult)
+        self.ff = FeedForward(node_dim, multiplier=ff_mult, dropout_p=dropout_p)
 
     def forward(self, s: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         # s shape: (B, L, node_dim), z shape: (B, L, L, pair_dim)
@@ -106,17 +110,18 @@ class TransformerBlock(nn.Module):
         
         return s
     
-
-class InvariantEncoder(nn.Module):
+# ==============================================================================
+# Encoder and Decoder Architectures
+# ==============================================================================
+    
+class TransformerEncoder(nn.Module):
     """
     This module orchestrates the entire process from backbone coordinates to a
     low-dimensional latent space representation.
     """
     def __init__(self, node_embed_dim: int = 64, pair_embed_dim: int = 32, num_blocks: int = 4, num_heads: int = 4, 
-                 latent_dim: int = 2, num_gaussians_ca: int=128, num_gaussians_no: int=64, use_skips: bool=False, **kwargs):
+                 latent_dim: int = 2, num_gaussians_ca: int=128, num_gaussians_no: int=64, dropout_p: float=0.1, **kwargs):
         super().__init__()
-
-        self.use_skips = use_skips
         
         # Initial projection layers
         self.project_1d_features = nn.Linear(6, node_embed_dim) # 6 for sin/cos of 3 angles
@@ -133,7 +138,7 @@ class InvariantEncoder(nn.Module):
         
         # Stack of transformer blocks
         self.blocks = nn.ModuleList([
-            TransformerBlock(node_dim=node_embed_dim, pair_dim=pair_embed_dim, num_heads=num_heads)
+            TransformerBlock(node_dim=node_embed_dim, pair_dim=pair_embed_dim, num_heads=num_heads, dropout_p=dropout_p)
             for _ in range(num_blocks)
         ])
         
@@ -156,29 +161,20 @@ class InvariantEncoder(nn.Module):
         
         # 3. Add Positional Encoding
         z = z + self.positional_encoding(residx)
-
-        if self.use_skips:
-            skips = []
         
         # 4. Process through Transformer Blocks
         for block in self.blocks:
             s = block(s, z)
-            # Only store the intermediate 's' if the flag is set
-            skips.append(s)
+
         # 5. Get final latent encoding
         # We can average the residue embeddings to get a single vector per structure
         s_mean = s.mean(dim=1) # (B, node_embed_dim)
         latent_vec = self.output_projection(s_mean) # (B, latent_dim)
         
-        # Return the full set of tensors for the U-Net decoder
-        if self.use_skips:
-            return latent_vec, z, skips
-        else:
-        # Return only the latent vector for an alternative decoder
-            return latent_vec
+        return latent_vec, z
 
 
-class UNetDecoder(nn.Module):
+class TransformerDecoder(nn.Module):
     """
     Decodes a latent vector back to 3D coordinates using a U-Net style
     architecture with skip connections from an encoder.
@@ -190,6 +186,7 @@ class UNetDecoder(nn.Module):
                  pair_dim: int, 
                  num_blocks: int, 
                  num_heads: int,
+                 dropout_p: float=0.1,
                  **kwargs):
         super().__init__()
         self.L = L
@@ -205,91 +202,75 @@ class UNetDecoder(nn.Module):
         #   will be 2 * node_dim because of the skip connection concatenation.
         self.decoder_blocks = nn.ModuleList([
             TransformerBlock(
-                node_dim=node_dim * 2, # Input is concatenated s_dec and s_skip
+                node_dim=node_dim,
                 pair_dim=pair_dim, 
-                num_heads=num_heads
+                num_heads=num_heads,
+                dropout_p=dropout_p
             ) for _ in range(num_blocks)
-        ])
-        
-        # A projection layer to bridge the output of one block (node_dim*2) 
-        # to the input of the next (node_dim) before concatenation.
-        self.projection_layers = nn.ModuleList([
-            nn.Linear(node_dim * 2, node_dim) for _ in range(num_blocks)
         ])
 
         # Final projection layer to predict coordinates
         self.coord_projection = nn.Linear(node_dim * 2, 4 * 3) # 4 atoms, 3 coords each
 
-    def forward(self, latent_vec: torch.Tensor, 
-                skip_connections: list[torch.Tensor], 
+    def forward(self, latent_vec: torch.Tensor,  
                 z_pair_bias: torch.Tensor) -> torch.Tensor:
         # latent_vec shape: (B, latent_dim)
-        # skip_connections: A list of encoder outputs, from shallow to deep
         # z_pair_bias: The 2D pair representation from the encoder
         B = latent_vec.shape[0]
 
-        # 1. Un-pool the latent vector to initialize the decoder's 1D state
+        # Un-pool the latent vector to initialize the decoder's 1D state
         s = self.unpool_mlp(latent_vec).view(B, self.L, self.node_dim)
 
-        # 2. Iteratively process through decoder blocks, applying skip connections
-        #    in reverse order (from deep/abstract to shallow/detailed).
-        for i in range(len(self.decoder_blocks)):
-            # Get the skip connection from the corresponding encoder layer
-            skip = skip_connections[-(i + 1)]
-            
-            # Concatenate the current decoder state with the skip connection
-            s_cat = torch.cat([s, skip], dim=-1) # Shape: (B, L, 2 * node_dim)
-            
-            # Pass through the decoder block
-            s_refined = self.decoder_blocks[i](s_cat, z_pair_bias)
-            
-            # Project back to the original node_dim for the next iteration's residual
-            s = self.projection_layers[i](s_refined)
-
-        # 3. Project final refined representation to coordinates
-        #    We use the final concatenated state as it has the richest information
-        final_s = torch.cat([s, skip_connections[0]], dim=-1)
-        pred_coords = self.coord_projection(final_s).view(B, self.L, 4, 3)
+        for block in self.decoder_blocks:
+            s = block(s, z_pair_bias)
         
+        pred_coords = self.coord_projection(s).view(B, self.L, 4, 3)
         return pred_coords
-
+        
+    
+# ==============================================================================
+# Final End-to-End Model
+# ==============================================================================
 
 class Autoencoder(nn.Module):
     """
     TODO.
     """
-    def __init__(self, L: int, node_dim: int, pair_dim: int, latent_dim: int, num_blocks: int, num_heads: int, **kwargs):
+    def __init__(self, L: int, node_dim: int, pair_dim: int, latent_dim: int, num_blocks: int, num_heads: int, dropout_p: float=0.1, **kwargs):
         super().__init__()
         
         # Instantiate the full encoder
-        self.encoder = InvariantEncoder(
+        self.encoder = TransformerEncoder(
             L=L,
             node_dim=node_dim,
             pair_dim=pair_dim,
             latent_dim=latent_dim,
             num_blocks=num_blocks,
-            num_heads=num_heads
+            num_heads=num_heads,
+            dropout_p=dropout_p
         )
         
         # Instantiate the full decoder
-        self.decoder = UNetDecoder(
+        self.decoder = TransformerDecoder(
             latent_dim=latent_dim,
             L=L,
             node_dim=node_dim,
             pair_dim=pair_dim,
             num_blocks=num_blocks,
-            num_heads=num_heads
+            num_heads=num_heads,
+            dropout_p=dropout_p
         )
 
     def forward(self, batch_coords: torch.Tensor):
+        B, L, _, _ = batch_coords.shape
+        device = batch_coords.device
+
+        residx = torch.arange(L, device=device).unsqueeze(0).expand(B, -1)
+
         # --- ENCODE ---
-        # The encoder must be modified to return the latent vector, the final pair bias 'z',
-        # and the list of skip connections.
-        latent_vec, z_pair_bias, skips = self.encoder(batch_coords)
-        
+        latent_vec, z_pair_bias = self.encoder(batch_coords, residx)
         # --- DECODE ---
-        # Pass the encoder's outputs directly to the decoder
-        reconstructed_coords = self.decoder(latent_vec, skips, z_pair_bias)
+        reconstructed_coords = self.decoder(latent_vec, z_pair_bias)
         
         return reconstructed_coords    
 
