@@ -17,9 +17,9 @@ def main():
     # Architectural hyperparameters
     model_params = {
         "L": 437, # Sequence length of MurD
-        "node_embed_dim": 32,
-        "pair_embed_dim": 32,
-        "latent_dim": 8,
+        "node_dim": 32,
+        "pair_dim": 32,
+        "latent_dim": 2,
         "num_blocks": 2,
         "num_heads": 4,
         "dropout_p": 0.1
@@ -43,7 +43,7 @@ def main():
         "w_rec": 1.0, 
         "w_dist": 0.5,
         "w_torsion": 0.2,
-        "w_phys": 0.01
+        "w_phys": 0.1
     }
 
     physics_params = {
