@@ -95,6 +95,13 @@ def main():
         loss_weights=loss_weights
     )
 
+    # Print a summary of the network parameters
+    print("--- Model Architecture Summary ---")
+    network_summary = trainer.get_network_summary()
+    for component, params in network_summary.items():
+        print(f"{component:<25}: {params:,}")
+    print("------------------------------------")
+
     # ==================================================================
     # 4. Training Loop with Organized Checkpointing
     # ==================================================================
