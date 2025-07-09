@@ -17,9 +17,9 @@ def main():
     # Architectural hyperparameters
     model_params = {
         "L": 437, # Sequence length of MurD
-        "node_dim": 32,
-        "pair_dim": 32,
-        "latent_dim": 2,
+        "node_embed_dim": 32,
+        "pair_embed_dim": 32,
+        "latent_dim": 8,
         "num_blocks": 2,
         "num_heads": 4,
         "dropout_p": 0.1
@@ -63,6 +63,7 @@ def main():
                     topology=None)
     data.fix_terminal()
     data.atomselect(atoms=["N", "CA", "C", "O"])
+    data.save_intermediate_pdb("debug_atom_order.pdb") 
 
     # ==================================================================
     # 3. Trainer and Model Preparation
