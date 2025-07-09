@@ -111,6 +111,22 @@ class PDBData:
             raise ValueError("Unsuported atom selection")
         self._mol.atoms = self._mol.select_atoms(selection_string)
 
+    def save_intermediate_pdb(self, output_filename: str):
+        """
+        Saves the current state of the selected atoms to a PDB file.
+        This is useful for debugging the atom order after selection.
+
+        Args:
+            output_filename (str): The path to save the intermediate PDB file.
+        """
+        if not hasattr(self, "_mol"):
+            raise RuntimeError("You must call import_pdb before saving an intermediate file.")
+        
+        # The .write() method of an AtomGroup saves the current selection to a file.
+        # Save only the first frame for inspection.
+        self._mol.atoms.write(output_filename, frames=self._mol.trajectory[0:1])
+        print(f"Intermediate PDB file saved to: {output_filename}")
+
     def prepare_dataset(self):
         """
         Once all datasets have been loaded, normalise data and convert into `torch.Tensor` (ready for training)
