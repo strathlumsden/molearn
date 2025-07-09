@@ -55,7 +55,6 @@ class Trainer:
         self.log_filename = None
         self.scheduler_key = None
         self.json_log = json_log
-        self.for_transformer = False
 
     def get_network_summary(self):
         """
