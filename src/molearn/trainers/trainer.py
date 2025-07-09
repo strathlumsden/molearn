@@ -114,10 +114,17 @@ class Trainer:
             raise NotImplementedError(
                 "Have not implemented this method to use any data other than PDBData yet"
             )
+        # If the data object has std/mean (i.e., not transformer mode), use them.
+        # Otherwise, set them to default values.
         if hasattr(data, 'std'):
             self.std = data.std
+        else:
+            self.std = 1.0
+            
         if hasattr(data, 'mean'):
             self.mean = data.mean
+        else:
+            self.mean = 0.0
 
         self.mol = data.mol
         self._data = data

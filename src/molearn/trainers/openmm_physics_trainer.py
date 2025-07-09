@@ -169,19 +169,22 @@ class OpenMM_Physics_Trainer(Trainer):
             else:
                 results["physics_loss"] = torch.tensor(0.0, device=self.device)
 
-            with torch.no_grad():
-                # Use loss_weights as base scaling factors
-                s = self.loss_weights
-                scale_dist = s['w_dist'] * results['mse_loss'] / (results['dist_loss'] + 1e-8)
-                scale_torsion = s['w_torsion'] * results['mse_loss'] / (results['torsion_loss'] + 1e-8)
-                scale_phys = s['w_phys'] * results['mse_loss'] / (results['physics_loss'] + 1e-8)
-                
-                total_loss = (
-                    results['mse_loss'] + 
-                    scale_dist * results['dist_loss'] + 
-                    scale_torsion * results['torsion_loss'] +
-                    scale_phys * results['physics_loss']
-                )
+           
+            # Use loss_weights as base scaling factors
+            s = self.loss_weights
+            scale_dist = s['w_dist'] * results['mse_loss'].detach() / (results['dist_loss'].detach() + 1e-8)
+            scale_torsion = s['w_torsion'] * results['mse_loss'].detach()/ (results['torsion_loss'].detach() + 1e-8)
+           
+           # Use a ternary expression for physics scale to avoid division by zero if physics loss is zero
+            phys_loss_detached = results['physics_loss'].detach()
+            scale_phys = (s['w_phys'] * results['mse_loss'].detach() / (phys_loss_detached + 1e-8)) if phys_loss_detached > 0 else 0.0
+            
+            total_loss = (
+                results['mse_loss'] + 
+                scale_dist * results['dist_loss'] + 
+                scale_torsion * results['torsion_loss'] +
+                scale_phys * results['physics_loss']
+            )
                 
             results["loss"] = total_loss
             return results
