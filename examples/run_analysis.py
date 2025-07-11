@@ -1,8 +1,12 @@
+import sys
+import os
 import torch
 import numpy as np
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 
+
+sys.path.insert(0, os.path.join(os.path.abspath(os.pardir), "src"))
 from molearn.analysis.transformer_analyser import TransformerAnalysis
 from molearn.models.transformer import Autoencoder
 from molearn.data import PDBData
@@ -12,8 +16,8 @@ def main():
     Main script to load a trained model and evaluate it on a test set.
     """
     # --- Configuration ---
-    exp_id = "Exp-001_Baseline"
-    checkpoint_path = f"results/{exp_id}/best_model.ckpt" # Example path
+    exp_id = "Exp-002_Transformer"
+    checkpoint_path = f"results/{exp_id}/checkpoint_epoch92_loss1.4829149696562025.ckpt"
     
 
     # Define paths to all datasets needed for analysis
@@ -23,12 +27,15 @@ def main():
     
     # --- Load Model and Data ---
     print("--- Loading model and test set ---")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    checkpoint = torch.load(checkpoint_path, map_location=device)
     model_params = checkpoint['network_kwargs']
     
     model = Autoencoder(**model_params)
     model.load_state_dict(checkpoint['model_state_dict'])
+    model.to(device)
     model.eval()
 
     analysis = TransformerAnalysis()
@@ -84,46 +91,46 @@ def main():
     outlier_percent = (rama_scores['decoded_outliers'].mean() / rama_scores['decoded_total'].mean()) * 100
     print(f"Ramachandran - Favored: {favored_percent:.2f}% | Outliers: {outlier_percent:.2f}%")
 
-    # --- Latent Space Visualization ---
-    print("\n--- Generating Latent Space Visualizations ---")
+    # # --- Latent Space Visualization ---
+    # print("\n--- Generating Latent Space Visualizations ---")
     
-    # Define the data to plot for our key analyses
-    plot_data_config = [
-        {'key': 'open_state', 'label': 'Open States', 'color': 'royalblue', 'plot_type': 'scatter', 's': 5},
-        {'key': 'closed_state', 'label': 'Closed States', 'color': 'firebrick', 'plot_type': 'scatter', 's': 5},
-        {'key': 'transition_path', 'label': 'Transition Path', 'color': 'limegreen', 'plot_type': 'path'}
-    ]
+    # # Define the data to plot for our key analyses
+    # plot_data_config = [
+    #     {'key': 'open_state', 'label': 'Open States', 'color': 'royalblue', 'plot_type': 'scatter', 's': 5},
+    #     {'key': 'closed_state', 'label': 'Closed States', 'color': 'firebrick', 'plot_type': 'scatter', 's': 5},
+    #     {'key': 'transition_path', 'label': 'Transition Path', 'color': 'limegreen', 'plot_type': 'scatter'}
+    # ]
 
-    # Generate and save the PCA plot
-    analysis.plot_latent_space(
-        plot_data=plot_data_config,
-        reduction='pca',
-        fit_on_keys=['open_state', 'closed_state'], # Fit PCA on training data only
-        output_filename=f"results/{exp_id}/latent_space_pca.png"
-    )
+    # # Generate and save the PCA plot
+    # analysis.plot_latent_space(
+    #     plot_data=plot_data_config,
+    #     reduction='pca',
+    #     fit_on_keys=['open_state', 'closed_state'], # Fit PCA on training data only
+    #     output_filename=f"results/{exp_id}/latent_space_pca.png"
+    # )
 
-    # Generate and save the t-SNE plot
-    analysis.plot_latent_space(
-        plot_data=plot_data_config,
-        reduction='tsne',
-        fit_on_keys=['open_state', 'closed_state'], # Fit t-SNE on training data only
-        output_filename=f"results/{exp_id}/latent_space_tsne.png"
-    )
+    # # Generate and save the t-SNE plot
+    # analysis.plot_latent_space(
+    #     plot_data=plot_data_config,
+    #     reduction='tsne',
+    #     fit_on_keys=['open_state', 'closed_state'], # Fit t-SNE on training data only
+    #     output_filename=f"results/{exp_id}/latent_space_tsne.png"
+    # )
 
-    # --- Example of "Richness Check" Analysis ---
-    # Color the closed states by simulation time (assuming it's sequential)
-    closed_coords = analysis.get_dataset("closed_state")
-    time_color_values = np.arange(len(closed_coords))
+    # # --- Example of "Richness Check" Analysis ---
+    # # Color the closed states by simulation time (assuming it's sequential)
+    # closed_coords = analysis.get_dataset("closed_state")
+    # time_color_values = np.arange(len(closed_coords))
     
-    analysis.plot_latent_space(
-        plot_data=[
-            {'key': 'closed_state', 'label': 'Closed States', 'plot_type': 'scatter', 's': 10}
-        ],
-        reduction='pca',
-        fit_on_keys=['closed_state'],
-        color_by_property={'key': 'closed_state', 'values': time_color_values, 'label': 'Simulation Time'},
-        output_filename=f"results/{exp_id}/latent_space_richness_check.png"
-    )
+    # analysis.plot_latent_space(
+    #     plot_data=[
+    #         {'key': 'closed_state', 'label': 'Closed States', 'plot_type': 'scatter', 's': 10}
+    #     ],
+    #     reduction='pca',
+    #     fit_on_keys=['closed_state'],
+    #     color_by_property={'key': 'closed_state', 'values': time_color_values, 'label': 'Simulation Time'},
+    #     output_filename=f"results/{exp_id}/latent_space_richness_check.png"
+    # )
 
 
 if __name__ == "__main__":
