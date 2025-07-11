@@ -12,13 +12,13 @@ def main():
     # 1. Experiment Configuration
     # ==================================================================
 
-    exp_id = "Exp-001_Transformer"
+    exp_id = "Exp-002_Transformer"
     
     # Architectural hyperparameters
     model_params = {
         "L": 437, # Sequence length of MurD
-        "node_embed_dim": 32,
-        "pair_embed_dim": 32,
+        "node_dim": 32,
+        "pair_dim": 32,
         "latent_dim": 2,
         "num_blocks": 2,
         "num_heads": 4,
@@ -43,7 +43,7 @@ def main():
         "w_rec": 1.0, 
         "w_dist": 0.5,
         "w_torsion": 0.2,
-        "w_phys": 0.1
+        "w_phys": 0.01
     }
 
     physics_params = {
