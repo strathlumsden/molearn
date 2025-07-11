@@ -44,8 +44,8 @@ def main():
     # the neural network was trained, the same train-test split will be obtained
     data = PDBData()
     data.import_pdb(
-        "./data/MurD_open_selection.pdb",
-        "./data/MurD_closed_selection.pdb",
+        ["./data/MurD_open_selection.pdb",
+        "./data/MurD_closed_selection.pdb"]
     )
     data.fix_terminal()
     data.atomselect(atoms=["CA", "C", "N"])
