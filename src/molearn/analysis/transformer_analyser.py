@@ -47,6 +47,7 @@ from openmm.unit import picoseconds
 
 warnings.filterwarnings("ignore")
 
+from molearn.analysis import MolearnAnalysis
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
@@ -77,7 +78,7 @@ class TransformerAnalysis(MolearnAnalysis):
             encoded = torch.empty(dataset.shape[0], self.network.encoder.output_projection.out_features)
             
             with torch.no_grad():
-                for i in range(0, dataset.shape[0], self.batch_size):
+                 for i in tqdm(range(0, dataset.shape[0], self.batch_size), desc=f"Encoding {key}"):
                     batch_coords = dataset[i : i + self.batch_size].to(self.device)
                     # Use the model's dedicated .encode() method
                     encoded_batch = self.network.encode(batch_coords).cpu()
@@ -109,7 +110,7 @@ class TransformerAnalysis(MolearnAnalysis):
                 reference_coords = self.get_dataset(key)
                 decoded = torch.empty(encoded.shape[0], *self.shape).float()
 
-                for i in range(0, encoded.shape[0], self.batch_size):
+                for i in tqdm(range(0, encoded.shape[0], self.batch_size), desc="Decoding Structures"):
                     batch_z = encoded[i : i + self.batch_size].to(self.device)
                     batch_ref = reference_coords[i : i + self.batch_size].to(self.device)
                     
@@ -131,15 +132,18 @@ class TransformerAnalysis(MolearnAnalysis):
         crd_mdl = as_numpy(decoded)
         
         err = []
-        m = deepcopy(self.mol)
         for i in range(dataset.shape[0]):
+            # ## UPDATE: Create a fresh molecule object inside the loop ##
+            # This prevents errors from persistent internal state.
+            m = deepcopy(self.mol)
+
             # Reshape from (L,4,3) to (L*4, 3) for RMSD calculation
             ref = crd_ref[i].reshape(-1, 3)
             mdl = crd_mdl[i].reshape(-1, 3)
 
             m.coordinates = np.expand_dims(ref, 0)
             m.add_xyz(mdl)
-            rmsd = m.rmsd(0, 1, align=align)
+            rmsd = m.rmsd(0, 1)
             err.append(rmsd)
 
         return np.array(err)
@@ -158,6 +162,26 @@ class TransformerAnalysis(MolearnAnalysis):
             results.append(self.dope_score_class.get_score(coords_np, refine=refine, **kwargs))
         
         return np.array([r.get() for r in results])
+
+    def _ramachandran_score(self, frame):
+        """
+        ## NEW OVERRIDDEN METHOD ##
+        This version correctly handles un-normalized data by passing it
+        directly to the scoring function without multiplying by stdval.
+        """
+        if not hasattr(self, "ramachandran_score_class"):
+            self.ramachandran_score_class = Parallel_Ramachandran_Score(
+                self.mol, self.processes
+            )
+        
+        # Ensure frame is a numpy array
+        if isinstance(frame, torch.Tensor):
+            f = frame.data.cpu().numpy()
+        else:
+            f = frame
+        
+        # Pass the coordinates directly without un-scaling
+        return self.ramachandran_score_class.get_score(f)
     
     def get_all_ramachandran_score(self, tensor):
         """
@@ -179,6 +203,8 @@ class TransformerAnalysis(MolearnAnalysis):
             rama["allowed"].append(allowed)
             rama["outliers"].append(outliers)
             rama["total"].append(total)
+
+        return {key: np.array(value) for key, value in rama.items()}
 
     def plot_latent_space(self, 
                           plot_data: list, 
@@ -207,29 +233,39 @@ class TransformerAnalysis(MolearnAnalysis):
         latent_vectors = {key: as_numpy(self.get_encoded(key)) for key in self._datasets.keys()}
         
         if reduction:
-            if fit_on_keys is None:
-                raise ValueError("`fit_on_keys` must be provided when using dimensionality reduction.")
-
-            # Concatenate data for fitting the reduction model
-            fit_data = np.concatenate([latent_vectors[key] for key in fit_on_keys])
-            
             if reduction.lower() == 'pca':
+                if fit_on_keys is None:
+                    raise ValueError("`fit_on_keys` must be provided when using PCA.")
+                fit_data = np.concatenate([latent_vectors[key] for key in fit_on_keys])
                 reducer = PCA(n_components=2)
+                print(f"Fitting PCA on {fit_on_keys}...")
+                reducer.fit(fit_data)
+                projected_vectors = {key: reducer.transform(vec) for key, vec in latent_vectors.items()}
+            
             elif reduction.lower() == 'tsne':
-                reducer = TSNE(n_components=2, perplexity=30, n_iter=1000)
+                # ## UPDATE: Corrected logic for t-SNE ##
+                # Concatenate all datasets to be plotted into a single array
+                all_keys = [config['key'] for config in plot_data]
+                combined_data = np.concatenate([latent_vectors[key] for key in all_keys])
+                
+                reducer = TSNE(n_components=2, perplexity=30)
+                print("Fitting and transforming with t-SNE...")
+                projected_combined = reducer.fit_transform(combined_data)
+                
+                # Slice the projected data back into the original groups
+                projected_vectors = {}
+                current_idx = 0
+                for key in all_keys:
+                    num_points = len(latent_vectors[key])
+                    projected_vectors[key] = projected_combined[current_idx : current_idx + num_points]
+                    current_idx += num_points
             else:
                 raise ValueError(f"Unknown reduction method: {reduction}")
-
-            print(f"Fitting {reduction.upper()} on {fit_on_keys}...")
-            reducer.fit(fit_data)
-            
-            # Transform all datasets into the same 2D space
-            projected_vectors = {key: reducer.transform(vec) for key, vec in latent_vectors.items()}
         else:
-            # Use raw latent vectors if dimension is 2
             if list(latent_vectors.values())[0].shape[1] != 2:
                 raise ValueError("Must specify a reduction method for latent spaces with dim > 2.")
             projected_vectors = latent_vectors
+
 
         # --- 2. Create Plot ---
         fig, ax = plt.subplots(figsize=(10, 8))
